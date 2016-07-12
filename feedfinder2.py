@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import logging
-from urllib.parse import urlparse
+from urllib.parse import urljoin
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -104,7 +104,7 @@ def find_feeds(url, check_all=False, session=None, user_agent=None):
                                 "application/atom+xml",
                                 "application/x.atom+xml",
                                 "application/x-atom+xml"]:
-            links.append(urlparse.urljoin(url, link.get("href", "")))
+            links.append(urljoin(url, link.get("href", "")))
 
     # Check the detected links.
     urls = yield from get_feed_urls(links)
@@ -126,7 +126,7 @@ def find_feeds(url, check_all=False, session=None, user_agent=None):
             remote.append(href)
 
     # Check the local URLs.
-    local = [urlparse.urljoin(url, l) for l in local]
+    local = [urljoin(url, l) for l in local]
     urls += yield from get_feed_urls(local)
     logging.info("Found {0} local <a> links to feeds.".format(len(urls)))
     if len(urls) and not check_all:
@@ -134,7 +134,7 @@ def find_feeds(url, check_all=False, session=None, user_agent=None):
         return sort_urls(urls)
 
     # Check the remote URLs.
-    remote = [urlparse.urljoin(url, l) for l in remote]
+    remote = [urljoin(url, l) for l in remote]
     urls += yield from get_feed_urls(remote)
     logging.info("Found {0} remote <a> links to feeds.".format(len(urls)))
     if len(urls) and not check_all:
@@ -144,7 +144,7 @@ def find_feeds(url, check_all=False, session=None, user_agent=None):
     # Guessing potential URLs.
     fns = ["atom.xml", "index.atom", "index.rdf", "rss.xml", "index.xml",
            "index.rss"]
-    urls += yield from get_feed_urls([urlparse.urljoin(url, f) for f in fns])
+    urls += yield from get_feed_urls([urljoin(url, f) for f in fns])
     finder.maybe_close_session()
     return sort_urls(urls)
 
