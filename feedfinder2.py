@@ -1,22 +1,20 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+import asyncio
+import logging
+from urllib.parse import urlparse
 
-from __future__ import print_function
+import aiohttp
+from bs4 import BeautifulSoup
+from pkg_resources import get_distribution
 
-__version__ = "0.0.3"
 
-try:
-    __FEEDFINDER2_SETUP__
-except NameError:
-    __FEEDFINDER2_SETUP__ = False
+__version__ = get_distribution('aio-feedfinder2').version
 
-if not __FEEDFINDER2_SETUP__:
-    __all__ = ["find_feeds"]
+__all__ = ["find_feeds"]
 
-    import logging
-    import requests
-    from bs4 import BeautifulSoup
-    from six.moves.urllib import parse as urlparse
+
+logger = logging.getLogger('feedfinder2')
 
 
 def coerce_url(url):
@@ -31,28 +29,32 @@ def coerce_url(url):
 
 class FeedFinder(object):
 
-    def __init__(self, user_agent=None):
+    def __init__(self, session=None, user_agent=None):
         if user_agent is None:
             user_agent = "feedfinder2/{0}".format(__version__)
-        self.user_agent = user_agent
+        self._close_session = session is None
+        if session is None:
+            session = aiohttp.ClientSession(headers={aiohttp.hdrs.USER_AGENT: user_agent})
+        self.session = session
 
+    @asyncio.coroutine
     def get_feed(self, url):
         try:
-            r = requests.get(url, headers={"User-Agent": self.user_agent})
+            response = yield from self.session.get(url)
         except Exception as e:
-            logging.warn("Error while getting '{0}'".format(url))
-            logging.warn("{0}".format(e))
+            logger.warn('Error while getting "%s"', url, exc_info=e)
             return None
-        return r.text
+        return (yield from response.text())
 
     def is_feed_data(self, text):
         data = text.lower()
         if data.count("<html"):
             return False
-        return data.count("<rss")+data.count("<rdf")+data.count("<feed")
+        return data.count("<rss") + data.count("<rdf") + data.count("<feed")
 
+    @asyncio.coroutine
     def is_feed(self, url):
-        text = self.get_feed(url)
+        text = yield from self.get_feed(url)
         if text is None:
             return False
         return self.is_feed_data(text)
@@ -65,15 +67,26 @@ class FeedFinder(object):
         return any(map(url.lower().count,
                        ["rss", "rdf", "xml", "atom", "feed"]))
 
+    def maybe_close_session(self):
+        if self._close_session:
+            self.session.close()
 
-def find_feeds(url, check_all=False, user_agent=None):
-    finder = FeedFinder(user_agent=user_agent)
+
+@asyncio.coroutine
+def find_feeds(url, check_all=False, session=None, user_agent=None):
+    finder = FeedFinder(session=session, user_agent=None)
+
+    @asyncio.coroutine
+    def get_feed_urls(links):
+        tasks = [finder.is_feed(link) for link in links]
+        are_feeds = yield from asyncio.gather(*tasks)  # order is guaranteed to be the same
+        return [url for url, is_feed in zip(links, are_feeds) if is_feed]
 
     # Format the URL properly.
     url = coerce_url(url)
 
     # Download the requested URL.
-    text = finder.get_feed(url)
+    text = yield from finder.get_feed(url)
     if text is None:
         return []
 
@@ -83,7 +96,7 @@ def find_feeds(url, check_all=False, user_agent=None):
 
     # Look for <link> tags.
     logging.info("Looking for <link> tags.")
-    tree = BeautifulSoup(text, "html.parser")
+    tree = BeautifulSoup(text)
     links = []
     for link in tree.find_all("link"):
         if link.get("type") in ["application/rss+xml",
@@ -94,9 +107,10 @@ def find_feeds(url, check_all=False, user_agent=None):
             links.append(urlparse.urljoin(url, link.get("href", "")))
 
     # Check the detected links.
-    urls = list(filter(finder.is_feed, links))
+    urls = yield from get_feed_urls(links)
     logging.info("Found {0} feed <link> tags.".format(len(urls)))
     if len(urls) and not check_all:
+        finder.maybe_close_session()
         return sort_urls(urls)
 
     # Look for <a> tags.
@@ -113,23 +127,25 @@ def find_feeds(url, check_all=False, user_agent=None):
 
     # Check the local URLs.
     local = [urlparse.urljoin(url, l) for l in local]
-    urls += list(filter(finder.is_feed, local))
+    urls += yield from get_feed_urls(local)
     logging.info("Found {0} local <a> links to feeds.".format(len(urls)))
     if len(urls) and not check_all:
+        finder.maybe_close_session()
         return sort_urls(urls)
 
     # Check the remote URLs.
     remote = [urlparse.urljoin(url, l) for l in remote]
-    urls += list(filter(finder.is_feed, remote))
+    urls += yield from get_feed_urls(remote)
     logging.info("Found {0} remote <a> links to feeds.".format(len(urls)))
     if len(urls) and not check_all:
+        finder.maybe_close_session()
         return sort_urls(urls)
 
     # Guessing potential URLs.
     fns = ["atom.xml", "index.atom", "index.rdf", "rss.xml", "index.xml",
            "index.rss"]
-    urls += list(filter(finder.is_feed, [urlparse.urljoin(url, f)
-                                         for f in fns]))
+    urls += yield from get_feed_urls([urlparse.urljoin(url, f) for f in fns])
+    finder.maybe_close_session()
     return sort_urls(urls)
 
 
@@ -147,13 +163,3 @@ def url_feed_prob(url):
 
 def sort_urls(feeds):
     return sorted(list(set(feeds)), key=url_feed_prob, reverse=True)
-
-
-if __name__ == "__main__":
-    print(find_feeds("www.preposterousuniverse.com/blog/"))
-    print(find_feeds("http://xkcd.com"))
-    print(find_feeds("dan.iel.fm/atom.xml"))
-    print(find_feeds("dan.iel.fm", check_all=True))
-    print(find_feeds("kapadia.github.io"))
-    print(find_feeds("blog.jonathansick.ca"))
-    print(find_feeds("asdasd"))
