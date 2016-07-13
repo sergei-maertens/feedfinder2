@@ -30,18 +30,26 @@ def coerce_url(url):
 
 class FeedFinder(object):
 
-    def __init__(self, session=None, user_agent=None):
+    def __init__(self, session=None, user_agent=None, timeout=None):
         if user_agent is None:
             user_agent = "feedfinder2/{0}".format(__version__)
         self._close_session = session is None
         if session is None:
             session = aiohttp.ClientSession(headers={aiohttp.hdrs.USER_AGENT: user_agent})
         self.session = session
+        self.timeout = timeout or 60  # sane default?
 
     @asyncio.coroutine
     def get_feed(self, url):
         try:
-            response = yield from self.session.get(url)
+            # raises asyncio.TimeoutError if it times out
+            try:
+                import bpdb; bpdb.set_trace()
+                with aiohttp.Timeout(self.timeout):
+                    response = yield from self.session.get(url)
+            except asyncio.TimeoutError:
+                logger.warn('Connection to "%s" timed out', url)
+                return None
         except aiohttp.ServerDisconnectedError as e:
             logger.warn('Server closed connection for url "%s"', url, exc_info=e)
             return None
@@ -102,8 +110,8 @@ class FeedFinder(object):
 
 
 @asyncio.coroutine
-def find_feeds(url, check_all=False, session=None, user_agent=None):
-    finder = FeedFinder(session=session, user_agent=None)
+def find_feeds(url, check_all=False, session=None, user_agent=None, timeout=None):
+    finder = FeedFinder(session=session, user_agent=user_agent, timeout=timeout)
 
     @asyncio.coroutine
     def get_feeds(links):
