@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import logging
+from io import StringIO
 from urllib.parse import urljoin
 
 import aiohttp
@@ -76,8 +77,10 @@ class FeedFinder(object):
     def is_feed(self, url):
         text = yield from self.get_feed(url)
         if text is None:
-            return False
-        return self.is_feed_data(text)
+            return False, None
+        is_feed_data = self.is_feed_data(text)
+        text_or_none = text if is_feed_data else None
+        return is_feed_data, text_or_none
 
     def is_feed_url(self, url):
         return any(map(url.lower().endswith,
@@ -97,10 +100,10 @@ def find_feeds(url, check_all=False, session=None, user_agent=None):
     finder = FeedFinder(session=session, user_agent=None)
 
     @asyncio.coroutine
-    def get_feed_urls(links):
+    def get_feeds(links):
         tasks = [finder.is_feed(link) for link in links]
-        are_feeds = yield from asyncio.gather(*tasks)  # order is guaranteed to be the same
-        return [url for url, is_feed in zip(links, are_feeds) if is_feed]
+        feeds = yield from asyncio.gather(*tasks)  # order is guaranteed to be the same
+        return [(url, StringIO(feed[1])) for url, feed in zip(links, feeds) if feed[0]]
 
     # Format the URL properly.
     url = coerce_url(url)
@@ -112,7 +115,7 @@ def find_feeds(url, check_all=False, session=None, user_agent=None):
 
     # Check if it is already a feed.
     if finder.is_feed_data(text):
-        return [url]
+        return [(url, StringIO(text))]
 
     # Look for <link> tags.
     logging.info("Looking for <link> tags.")
@@ -127,11 +130,11 @@ def find_feeds(url, check_all=False, session=None, user_agent=None):
             links.append(urljoin(url, link.get("href", "")))
 
     # Check the detected links.
-    urls = yield from get_feed_urls(links)
-    logging.info("Found {0} feed <link> tags.".format(len(urls)))
-    if len(urls) and not check_all:
+    feeds = yield from get_feeds(links)
+    logging.info("Found {0} feed <link> tags.".format(len(feeds)))
+    if len(feeds) and not check_all:
         finder.maybe_close_session()
-        return sort_urls(urls)
+        return sort_feeds(feeds)
 
     # Look for <a> tags.
     logging.info("Looking for <a> tags.")
@@ -147,29 +150,30 @@ def find_feeds(url, check_all=False, session=None, user_agent=None):
 
     # Check the local URLs.
     local = [urljoin(url, l) for l in local]
-    urls += yield from get_feed_urls(local)
-    logging.info("Found {0} local <a> links to feeds.".format(len(urls)))
-    if len(urls) and not check_all:
+    feeds += yield from get_feeds(local)
+    logging.info("Found {0} local <a> links to feeds.".format(len(feeds)))
+    if len(feeds) and not check_all:
         finder.maybe_close_session()
-        return sort_urls(urls)
+        return sort_feeds(feeds)
 
     # Check the remote URLs.
     remote = [urljoin(url, l) for l in remote]
-    urls += yield from get_feed_urls(remote)
-    logging.info("Found {0} remote <a> links to feeds.".format(len(urls)))
-    if len(urls) and not check_all:
+    feeds += yield from get_feeds(remote)
+    logging.info("Found {0} remote <a> links to feeds.".format(len(feeds)))
+    if len(feeds) and not check_all:
         finder.maybe_close_session()
-        return sort_urls(urls)
+        return sort_feeds(feeds)
 
     # Guessing potential URLs.
     fns = ["atom.xml", "index.atom", "index.rdf", "rss.xml", "index.xml",
            "index.rss"]
-    urls += yield from get_feed_urls([urljoin(url, f) for f in fns])
+    feeds += yield from get_feeds([urljoin(url, f) for f in fns])
     finder.maybe_close_session()
-    return sort_urls(urls)
+    return sort_feeds(feeds)
 
 
-def url_feed_prob(url):
+def url_feed_prob(feed):
+    url = feed[0]
     if "comments" in url:
         return -2
     if "georss" in url:
@@ -181,5 +185,8 @@ def url_feed_prob(url):
     return 0
 
 
-def sort_urls(feeds):
+def sort_feeds(feeds):
+    """
+    Feeds is an iterable of tuples of the form (url, feed_string)
+    """
     return sorted(list(set(feeds)), key=url_feed_prob, reverse=True)
