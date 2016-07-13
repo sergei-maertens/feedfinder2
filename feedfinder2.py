@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import logging
-from io import StringIO
+from io import BytesIO
 from urllib.parse import urljoin
 
 import aiohttp
@@ -41,26 +41,25 @@ class FeedFinder(object):
 
     @asyncio.coroutine
     def get_feed(self, url):
+        EMPTY = (None, None)
         try:
-            # raises asyncio.TimeoutError if it times out
+            request = self.session.get(url)
             try:
-                import bpdb; bpdb.set_trace()
-                with aiohttp.Timeout(self.timeout):
-                    response = yield from self.session.get(url)
+                response = yield from asyncio.wait_for(request, self.timeout)
             except asyncio.TimeoutError:
                 logger.warn('Connection to "%s" timed out', url)
-                return None
+                return EMPTY
         except aiohttp.ServerDisconnectedError as e:
             logger.warn('Server closed connection for url "%s"', url, exc_info=e)
-            return None
+            return EMPTY
         except Exception as e:
             logger.warn('Error while getting "%s"', url, exc_info=e)
-            return None
+            return EMPTY
         try:
             text = yield from response.text()
         except aiohttp.ServerDisconnectedError as e:
             logger.warn('Server closed connection for url "%s"', url, exc_info=e)
-            return None
+            return EMPTY
         except UnicodeDecodeError:
             # - inspired by requests.models.Response.text encoding handling -
             # aiohttp actually does the correct thing here, but the webpage declares
@@ -79,7 +78,8 @@ class FeedFinder(object):
                 #
                 # So we try blindly encoding.
                 text = str(content, errors='replace')
-        return text
+        encoding = response._get_encoding()
+        return text, encoding
 
     def is_feed_data(self, text):
         data = text.lower()
@@ -89,11 +89,11 @@ class FeedFinder(object):
 
     @asyncio.coroutine
     def is_feed(self, url):
-        text = yield from self.get_feed(url)
+        text, encoding = yield from self.get_feed(url)
         if text is None:
-            return False, None
+            return False, None, None
         is_feed_data = self.is_feed_data(text)
-        text_or_none = text if is_feed_data else None
+        text_or_none = BytesIO(bytes(text, encoding)) if is_feed_data else None
         return is_feed_data, text_or_none
 
     def is_feed_url(self, url):
@@ -117,19 +117,19 @@ def find_feeds(url, check_all=False, session=None, user_agent=None, timeout=None
     def get_feeds(links):
         tasks = [finder.is_feed(link) for link in links]
         feeds = yield from asyncio.gather(*tasks)  # order is guaranteed to be the same
-        return [(url, StringIO(feed[1])) for url, feed in zip(links, feeds) if feed[0]]
+        return [(url, feed[1]) for url, feed in zip(links, feeds) if feed[0]]
 
     # Format the URL properly.
     url = coerce_url(url)
 
     # Download the requested URL.
-    text = yield from finder.get_feed(url)
+    text, encoding = yield from finder.get_feed(url)
     if text is None:
         return []
 
     # Check if it is already a feed.
     if finder.is_feed_data(text):
-        return [(url, StringIO(text))]
+        return [(url, BytesIO(bytes(text, encoding)))]
 
     # Look for <link> tags.
     logging.info("Looking for <link> tags.")
