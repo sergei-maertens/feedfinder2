@@ -42,11 +42,17 @@ class FeedFinder(object):
     def get_feed(self, url):
         try:
             response = yield from self.session.get(url)
+        except aiohttp.ServerDisconnectedError as e:
+            logger.warn('Server closed connection for url "%s"', url, exc_info=e)
+            return None
         except Exception as e:
             logger.warn('Error while getting "%s"', url, exc_info=e)
             return None
         try:
             text = yield from response.text()
+        except aiohttp.ServerDisconnectedError as e:
+            logger.warn('Server closed connection for url "%s"', url, exc_info=e)
+            return None
         except UnicodeDecodeError:
             # - inspired by requests.models.Response.text encoding handling -
             # aiohttp actually does the correct thing here, but the webpage declares
