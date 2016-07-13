@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="aio-feedfinder2",
-    version='0.1.1',
+    version='0.1.2',
     url="https://github.com/sergei-maertens/feedfinder2",
     license="MIT",
     author="Sergei Maertens, Dan Foreman-Mackey",

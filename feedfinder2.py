@@ -44,7 +44,27 @@ class FeedFinder(object):
         except Exception as e:
             logger.warn('Error while getting "%s"', url, exc_info=e)
             return None
-        return (yield from response.text())
+        try:
+            text = yield from response.text()
+        except UnicodeDecodeError:
+            # - inspired by requests.models.Response.text encoding handling -
+            # aiohttp actually does the correct thing here, but the webpage declares
+            # an incorrect encoding. ``requests`` handles this a bit more robust
+            # by replacing the invalid charachters, so let's borrow their error handling!
+            content = yield from response.read()
+            encoding = response._get_encoding()
+            try:
+                text = str(content, encoding, errors='replace')
+            except (LookupError, TypeError):
+                # - Taken from requests.models.Response.text encoding handling -
+                # A LookupError is raised if the encoding was not found which could
+                # indicate a misspelling or similar mistake.
+                #
+                # A TypeError can be raised if encoding is None
+                #
+                # So we try blindly encoding.
+                text = str(content, errors='replace')
+        return text
 
     def is_feed_data(self, text):
         data = text.lower()
