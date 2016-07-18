@@ -91,7 +91,7 @@ class FeedFinder(object):
     def is_feed(self, url):
         text, encoding = yield from self.get_feed(url)
         if text is None:
-            return False, None, None
+            return False, None
         is_feed_data = self.is_feed_data(text)
         text_or_none = BytesIO(bytes(text, encoding)) if is_feed_data else None
         return is_feed_data, text_or_none
