@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import logging
+import time
 from io import BytesIO
 from urllib.parse import urljoin
 
@@ -30,56 +31,73 @@ def coerce_url(url):
 
 class FeedFinder(object):
 
-    def __init__(self, session=None, user_agent=None, timeout=None):
+    def __init__(self, user_agent=None, timeout=None):
         if user_agent is None:
             user_agent = "feedfinder2/{0}".format(__version__)
-        self._close_session = session is None
-        if session is None:
-            session = aiohttp.ClientSession(headers={aiohttp.hdrs.USER_AGENT: user_agent})
-        self.session = session
+
+        self.user_agent = user_agent
         self.timeout = timeout or 60  # sane default?
+
+    def _get_session(self):
+        return aiohttp.ClientSession(headers={aiohttp.hdrs.USER_AGENT: self.user_agent})
 
     @asyncio.coroutine
     def get_feed(self, url):
         EMPTY = (None, None)
-        try:
-            request = self.session.get(url)
+        with self._get_session() as session:
+            logger.debug('Fetching %s', url)
+            start_times = asyncio.get_event_loop().time(), time.time()
             try:
-                response = yield from asyncio.wait_for(request, self.timeout)
+                response = yield from asyncio.wait_for(session.get(url), self.timeout)
             except asyncio.TimeoutError:
-                logger.warn('Connection to "%s" timed out', url)
+                cur_times = asyncio.get_event_loop().time(), time.time()
+                durations = [a - b for a, b in zip(cur_times, start_times)]
+                logger.warn(
+                    'Connection to "%s" timed out (loop time %ds, real time %ds)',
+                    url, durations[0], durations[1]
+                )
                 return EMPTY
-        except aiohttp.ServerDisconnectedError as e:
-            logger.warn('Server closed connection for url "%s"', url, exc_info=e)
-            return EMPTY
-        except Exception as e:
-            logger.warn('Error while getting "%s"', url, exc_info=e)
-            return EMPTY
-        try:
-            text = yield from response.text()
-        except aiohttp.ServerDisconnectedError as e:
-            logger.warn('Server closed connection for url "%s"', url, exc_info=e)
-            return EMPTY
-        except UnicodeDecodeError:
-            # - inspired by requests.models.Response.text encoding handling -
-            # aiohttp actually does the correct thing here, but the webpage declares
-            # an incorrect encoding. ``requests`` handles this a bit more robust
-            # by replacing the invalid charachters, so let's borrow their error handling!
-            content = yield from response.read()
-            encoding = response._get_encoding()
+            except aiohttp.ServerDisconnectedError as e:
+                logger.warn('Server closed connection for url "%s"', url, exc_info=e)
+                return EMPTY
+            except aiohttp.ClientOSError as exc:
+                if len(exc.args) > 1 and (
+                        'Name or service not known' in exc.args[1] or
+                        'Can not connect to ' in exc.args[1]
+                ):
+                    logger.warn('Could not DNS resolve or connect to %s', url)
+                    return EMPTY
+                logger.warn('Error while getting "%s"', url, exc_info=exc)
+                return EMPTY
+            except Exception as e:
+                logger.warn('Error while getting "%s"', url, exc_info=e)
+                return EMPTY
+
             try:
-                text = str(content, encoding, errors='replace')
-            except (LookupError, TypeError):
-                # - Taken from requests.models.Response.text encoding handling -
-                # A LookupError is raised if the encoding was not found which could
-                # indicate a misspelling or similar mistake.
-                #
-                # A TypeError can be raised if encoding is None
-                #
-                # So we try blindly encoding.
-                text = str(content, errors='replace')
-        encoding = response._get_encoding()
-        return text, encoding
+                text = yield from response.text()
+            except aiohttp.ServerDisconnectedError as e:
+                logger.warn('Server closed connection for url "%s"', url, exc_info=e)
+                return EMPTY
+            except UnicodeDecodeError:
+                # - inspired by requests.models.Response.text encoding handling -
+                # aiohttp actually does the correct thing here, but the webpage declares
+                # an incorrect encoding. ``requests`` handles this a bit more robust
+                # by replacing the invalid charachters, so let's borrow their error handling!
+                content = yield from response.read()
+                encoding = response._get_encoding()
+                try:
+                    text = str(content, encoding, errors='replace')
+                except (LookupError, TypeError):
+                    # - Taken from requests.models.Response.text encoding handling -
+                    # A LookupError is raised if the encoding was not found which could
+                    # indicate a misspelling or similar mistake.
+                    #
+                    # A TypeError can be raised if encoding is None
+                    #
+                    # So we try blindly encoding.
+                    text = str(content, errors='replace')
+            encoding = response._get_encoding()
+            return text, encoding
 
     def is_feed_data(self, text):
         data = text.lower()
@@ -92,6 +110,7 @@ class FeedFinder(object):
         text, encoding = yield from self.get_feed(url)
         if text is None:
             return False, None
+        logger.debug('Got response from %s, with encoding %s', url, encoding)
         is_feed_data = self.is_feed_data(text)
         text_or_none = BytesIO(bytes(text, encoding)) if is_feed_data else None
         return is_feed_data, text_or_none
@@ -104,14 +123,10 @@ class FeedFinder(object):
         return any(map(url.lower().count,
                        ["rss", "rdf", "xml", "atom", "feed"]))
 
-    def maybe_close_session(self):
-        if self._close_session:
-            self.session.close()
-
 
 @asyncio.coroutine
-def find_feeds(url, check_all=False, session=None, user_agent=None, timeout=None):
-    finder = FeedFinder(session=session, user_agent=user_agent, timeout=timeout)
+def find_feeds(url, check_all=False, user_agent=None, timeout=None):
+    finder = FeedFinder(user_agent=user_agent, timeout=timeout)
 
     @asyncio.coroutine
     def get_feeds(links):
@@ -144,10 +159,10 @@ def find_feeds(url, check_all=False, session=None, user_agent=None, timeout=None
             links.append(urljoin(url, link.get("href", "")))
 
     # Check the detected links.
+    logger.debug('Checking links for feeds: %s', links)
     feeds = yield from get_feeds(links)
     logging.info("Found {0} feed <link> tags.".format(len(feeds)))
     if len(feeds) and not check_all:
-        finder.maybe_close_session()
         return sort_feeds(feeds)
 
     # Look for <a> tags.
@@ -167,7 +182,6 @@ def find_feeds(url, check_all=False, session=None, user_agent=None, timeout=None
     feeds += yield from get_feeds(local)
     logging.info("Found {0} local <a> links to feeds.".format(len(feeds)))
     if len(feeds) and not check_all:
-        finder.maybe_close_session()
         return sort_feeds(feeds)
 
     # Check the remote URLs.
@@ -175,14 +189,12 @@ def find_feeds(url, check_all=False, session=None, user_agent=None, timeout=None
     feeds += yield from get_feeds(remote)
     logging.info("Found {0} remote <a> links to feeds.".format(len(feeds)))
     if len(feeds) and not check_all:
-        finder.maybe_close_session()
         return sort_feeds(feeds)
 
     # Guessing potential URLs.
     fns = ["atom.xml", "index.atom", "index.rdf", "rss.xml", "index.xml",
            "index.rss"]
     feeds += yield from get_feeds([urljoin(url, f) for f in fns])
-    finder.maybe_close_session()
     return sort_feeds(feeds)
 
 
