@@ -192,8 +192,8 @@ def find_feeds(url, check_all=False, user_agent=None, timeout=None):
         return sort_feeds(feeds)
 
     # Guessing potential URLs.
-    fns = ["atom.xml", "index.atom", "index.rdf", "rss.xml", "index.xml",
-           "index.rss"]
+    fns = ["feed", "rss", "atom", "blog?format=rss", "atom.xml",
+           "index.atom", "index.rdf", "rss.xml", "index.xml", "index.rss"]
     feeds += yield from get_feeds([urljoin(url, f) for f in fns])
     return sort_feeds(feeds)
 
