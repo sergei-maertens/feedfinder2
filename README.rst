@@ -17,7 +17,7 @@ Feedfinder2 offers a single public function: ``find_feeds``. You would use it
 as following::
 
     import asyncio
-    from feedfinder2 import find_feeds
+    from aio_feedfinder2 import find_feeds
 
     loop = asyncio.get_event_loop()
     task = asyncio.ensure_future(find_feeds("xkcd.com"))
@@ -32,7 +32,7 @@ This ``asyncio`` variant is ideally suited to find feeds on multiple domains/
 sites in an asynchronous way::
 
     import asyncio
-    from feedfinder2 import find_feeds
+    from aio_feedfinder2 import find_feeds
 
     loop = asyncio.get_event_loop()
     tasks = [find_feeds(url) for url in ["xkcd.com", "abstrusegoose.com"]]
